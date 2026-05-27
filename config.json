@@ -3,22 +3,26 @@
     "akai_mpc_one_plus": {
       "display_name": "Akai MPC One+",
       "search_query": "akai-mpc-one-plus",
-      "new_price_pln": 3000
+      "new_price_pln": 3000,
+      "match_keywords": ["MPC One+", "MPC One Plus", "One+"]
     },
     "akai_mpc_live_ii": {
       "display_name": "Akai MPC Live II",
       "search_query": "akai-mpc-live-ii",
-      "new_price_pln": 4000
+      "new_price_pln": 4000,
+      "match_keywords": ["MPC Live II", "MPC Live 2", "Live II", "Live 2"]
     },
     "akai_mpc_live_iii": {
       "display_name": "Akai MPC Live III",
       "search_query": "akai-mpc-live-iii",
-      "new_price_pln": 6500
+      "new_price_pln": 6500,
+      "match_keywords": ["MPC Live III", "MPC Live 3", "Live III", "Live 3"]
     },
     "pioneer_ddj_flx4": {
       "display_name": "Pioneer DDJ-FLX4",
       "search_query": "pioneer-ddj-flx4",
-      "new_price_pln": 1400
+      "new_price_pln": 1400,
+      "match_keywords": ["FLX4", "FLX-4"]
     }
   },
   "deal_thresholds": {
@@ -29,7 +33,7 @@
     "like_new": 0.78,
     "unknown": 0.50
   },
-  "condition_model": "gpt-4o-mini",
+  "condition_model": "openai/gpt-oss-120b:free",
   "scraper": {
     "request_delay_min_seconds": 2,
     "request_delay_max_seconds": 4,

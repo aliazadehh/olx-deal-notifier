@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -68,7 +69,8 @@ def load_config() -> dict:
 
 def validate_env() -> None:
     logger = logging.getLogger(__name__)
-    missing = [v for v in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID") if not os.getenv(v)]
+    required = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "OPENROUTER_API_KEY")
+    missing = [v for v in required if not os.getenv(v)]
     if missing:
         logger.error(
             "Missing required environment variables: %s. "
@@ -82,6 +84,19 @@ def validate_env() -> None:
 # Per-product processing
 # ---------------------------------------------------------------------------
 
+def _is_recent(listing: dict, cutoff: datetime) -> bool:
+    ct = listing.get("created_time", "")
+    if not ct:
+        return True
+    try:
+        dt = datetime.fromisoformat(ct)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt >= cutoff
+    except (ValueError, TypeError):
+        return True
+
+
 def process_product(
     product_key: str,
     product_cfg: dict,
@@ -89,6 +104,7 @@ def process_product(
     scraper_cfg: dict,
     condition_model: str,
     is_first: bool,
+    cutoff: datetime,
 ) -> dict:
     logger = logging.getLogger(__name__)
     display_name = product_cfg["display_name"]
@@ -117,8 +133,11 @@ def process_product(
         deals_found=0,
         notifications_sent=0,
         skipped_seen=0,
+        skipped_old=0,
         errors=0,
     )
+
+    match_keywords = [kw.lower() for kw in product_cfg.get("match_keywords", [])]
 
     for listing in listings:
         listing_id = listing["id"]
@@ -127,6 +146,16 @@ def process_product(
 
         if not listing_id:
             result["errors"] += 1
+            continue
+
+        if not _is_recent(listing, cutoff):
+            logger.debug("Skipping '%s' — older than cutoff", title)
+            result["skipped_old"] += 1
+            continue
+
+        if match_keywords and not any(kw in title.lower() for kw in match_keywords):
+            logger.debug("Skipping '%s' — title does not match keywords", title)
+            result["skipped_seen"] += 1
             continue
 
         if db.is_seen(listing_id):
@@ -213,11 +242,22 @@ def main() -> None:
     products = config.get("products", {})
     thresholds = config.get("deal_thresholds", {})
     scraper_cfg = config.get("scraper", {})
-    condition_model = config.get("condition_model", "gpt-4o-mini")
+    condition_model = config.get("condition_model", "openai/gpt-oss-120b:free")
 
     if not products:
         logger.error("No products defined in config.json")
         sys.exit(1)
+
+    # Record run start time before fetching — this becomes the cutoff for the next run
+    run_started_at = datetime.now(timezone.utc)
+
+    last_run = db.get_last_run()
+    if last_run:
+        cutoff = last_run
+        logger.info("Filtering listings posted after %s", cutoff.isoformat())
+    else:
+        cutoff = run_started_at - timedelta(hours=13)
+        logger.info("First run — using cutoff of 13 hours ago (%s)", cutoff.isoformat())
 
     summary = []
     for idx, (product_key, product_cfg) in enumerate(products.items()):
@@ -229,13 +269,17 @@ def main() -> None:
                 scraper_cfg=scraper_cfg,
                 condition_model=condition_model,
                 is_first=(idx == 0),
+                cutoff=cutoff,
             )
             summary.append(result)
         except Exception as exc:
             logger.error("Unhandled error for '%s': %s", product_key, exc, exc_info=True)
             summary.append({"product_key": product_key, "errors": 1,
                             "listings_found": 0, "deals_found": 0,
-                            "notifications_sent": 0, "skipped_seen": 0})
+                            "notifications_sent": 0, "skipped_seen": 0,
+                            "skipped_old": 0})
+
+    db.set_last_run(run_started_at)
 
     logger.info("========== Run Summary ==========")
     total_deals = total_notified = 0
@@ -243,12 +287,13 @@ def main() -> None:
         total_deals += r.get("deals_found", 0)
         total_notified += r.get("notifications_sent", 0)
         logger.info(
-            "  %-25s listings=%-3d deals=%-2d notified=%-2d skipped=%-3d errors=%d",
+            "  %-25s listings=%-3d deals=%-2d notified=%-2d skipped=%-3d old=%-3d errors=%d",
             r.get("product_key", "?"),
             r.get("listings_found", 0),
             r.get("deals_found", 0),
             r.get("notifications_sent", 0),
             r.get("skipped_seen", 0),
+            r.get("skipped_old", 0),
             r.get("errors", 0),
         )
     logger.info("Total: %d deal(s), %d notification(s) sent.", total_deals, total_notified)

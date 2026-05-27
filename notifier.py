@@ -70,12 +70,14 @@ def send_deal_notification(
         "chat_id": chat_id,
         "text": message,
         "parse_mode": "HTML",
-        "disable_web_page_preview": False,
+        "link_preview_options": {"is_disabled": False},
     }
 
     try:
         resp = requests.post(api_url, json=payload, timeout=10)
-        resp.raise_for_status()
+        if not resp.ok:
+            logger.error("Telegram send failed: %d %s — %s", resp.status_code, resp.reason, resp.text)
+            return False
         data = resp.json()
         if not data.get("ok"):
             logger.error("Telegram API returned not-ok: %s", data)

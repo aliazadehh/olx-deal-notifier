@@ -1,5 +1,5 @@
 """
-condition_llm.py — Classify listing condition using a cheap OpenAI OSS model.
+condition_llm.py — Classify listing condition using an LLM via OpenRouter.
 
 Returns one of: heavily_used | used | good | very_good | like_new | unknown
 Falls back to 'unknown' on any API error so the pipeline never crashes.
@@ -7,6 +7,7 @@ Falls back to 'unknown' on any API error so the pipeline never crashes.
 
 import logging
 import os
+from typing import Optional
 
 from openai import OpenAI
 
@@ -27,12 +28,30 @@ USER_TEMPLATE = "Title: {title}\nDescription: {description}"
 # In-process cache: listing_id → condition string
 _cache: dict[str, str] = {}
 
+# Module-level client — created once when first needed
+_client: Optional[OpenAI] = None
+
+
+def _get_client() -> Optional[OpenAI]:
+    global _client
+    if _client is not None:
+        return _client
+
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        logger.warning("OPENROUTER_API_KEY not set; defaulting condition to 'unknown'")
+        return None
+
+    base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    _client = OpenAI(api_key=api_key, base_url=base_url)
+    return _client
+
 
 def classify_condition(
     listing_id: str,
     title: str,
     description: str,
-    model: str = "gpt-4o-mini",
+    model: str = "openai/gpt-4o-mini",
 ) -> str:
     """
     Return the condition tier for a listing.
@@ -43,9 +62,8 @@ def classify_condition(
     if listing_id in _cache:
         return _cache[listing_id]
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        logger.warning("OPENAI_API_KEY not set; defaulting condition to 'unknown'")
+    client = _get_client()
+    if client is None:
         return "unknown"
 
     text = (title or "").strip()
@@ -56,7 +74,6 @@ def classify_condition(
         return "unknown"
 
     try:
-        client = OpenAI(api_key=api_key)
         response = client.chat.completions.create(
             model=model,
             messages=[

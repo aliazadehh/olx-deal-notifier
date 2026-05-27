@@ -5,8 +5,9 @@ db.py — SQLite-backed deduplication store.
 import logging
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,13 @@ CREATE TABLE IF NOT EXISTS seen_listings (
     product_key  TEXT,
     condition    TEXT,
     notified_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+CREATE_RUN_LOG_SQL = """
+CREATE TABLE IF NOT EXISTS run_log (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    last_run_at TEXT
 );
 """
 
@@ -41,8 +49,29 @@ def init_db() -> None:
     logger.debug("Initializing database at %s", _db_path())
     with get_connection() as conn:
         conn.execute(CREATE_TABLE_SQL)
+        conn.execute(CREATE_RUN_LOG_SQL)
         conn.commit()
     logger.info("Database ready at %s", _db_path())
+
+
+def get_last_run() -> Optional[datetime]:
+    with get_connection() as conn:
+        row = conn.execute("SELECT last_run_at FROM run_log WHERE id = 1").fetchone()
+    if row and row["last_run_at"]:
+        dt = datetime.fromisoformat(str(row["last_run_at"]))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    return None
+
+
+def set_last_run(dt: datetime) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO run_log (id, last_run_at) VALUES (1, ?)",
+            (dt.isoformat(),),
+        )
+        conn.commit()
 
 
 def is_seen(listing_id: str) -> bool:
