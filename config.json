@@ -1,0 +1,39 @@
+{
+  "products": {
+    "akai_mpc_one_plus": {
+      "display_name": "Akai MPC One+",
+      "search_query": "akai-mpc-one-plus",
+      "new_price_pln": 3000
+    },
+    "akai_mpc_live_ii": {
+      "display_name": "Akai MPC Live II",
+      "search_query": "akai-mpc-live-ii",
+      "new_price_pln": 4000
+    },
+    "akai_mpc_live_iii": {
+      "display_name": "Akai MPC Live III",
+      "search_query": "akai-mpc-live-iii",
+      "new_price_pln": 6500
+    },
+    "pioneer_ddj_flx4": {
+      "display_name": "Pioneer DDJ-FLX4",
+      "search_query": "pioneer-ddj-flx4",
+      "new_price_pln": 1400
+    }
+  },
+  "deal_thresholds": {
+    "heavily_used": 0.35,
+    "used": 0.50,
+    "good": 0.60,
+    "very_good": 0.70,
+    "like_new": 0.78,
+    "unknown": 0.50
+  },
+  "condition_model": "gpt-4o-mini",
+  "scraper": {
+    "request_delay_min_seconds": 2,
+    "request_delay_max_seconds": 4,
+    "max_retries": 3,
+    "retry_backoff_base_seconds": 2
+  }
+}
