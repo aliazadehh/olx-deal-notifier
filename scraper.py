@@ -1,13 +1,15 @@
 """
 scraper.py — Fetch OLX.pl listings via the public REST API.
 
-Anti-bot: rotating User-Agents, Polish Accept-Language, random delays,
-          exponential backoff retry.
+Fetches pages sorted newest-first and stops paginating as soon as a listing
+is older than the cutoff, so no new listings are ever missed regardless of
+how many total listings exist for a query.
 """
 
 import logging
 import random
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 import requests
@@ -16,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 OLX_API_URL = "https://www.olx.pl/api/v1/offers/"
 OLX_API_LIMIT = 50
+OLX_API_MAX_PAGES = 10  # safety cap — 500 listings max per product per run
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -40,29 +43,29 @@ def _headers() -> dict:
     return h
 
 
-def _fetch_api(
+def _fetch_page(
     query: str,
-    max_retries: int = 3,
-    backoff_base: float = 2.0,
+    offset: int,
+    max_retries: int,
+    backoff_base: float,
 ) -> Optional[list[dict]]:
     params = {
         "query": query.replace("-", " "),
+        "sort_by": "created_at:desc",
         "limit": OLX_API_LIMIT,
-        "offset": 0,
+        "offset": offset,
     }
 
     for attempt in range(1, max_retries + 1):
         try:
-            logger.debug("API GET %s params=%s (attempt %d/%d)", OLX_API_URL, params, attempt, max_retries)
+            logger.debug("API GET offset=%d (attempt %d/%d)", offset, attempt, max_retries)
             resp = requests.get(OLX_API_URL, params=params, headers=_headers(), timeout=20)
 
             if resp.status_code == 403:
                 logger.warning("API blocked (403) on attempt %d", attempt)
             else:
                 resp.raise_for_status()
-                offers = resp.json().get("data", [])
-                logger.debug("API returned %d offers", len(offers))
-                return offers
+                return resp.json().get("data", [])
 
         except requests.HTTPError as exc:
             logger.warning("HTTP error attempt %d: %s", attempt, exc)
@@ -71,7 +74,7 @@ def _fetch_api(
         except requests.Timeout:
             logger.warning("Timeout attempt %d", attempt)
         except (requests.RequestException, ValueError) as exc:
-            logger.error("Fatal error fetching '%s': %s", query, exc)
+            logger.error("Fatal error: %s", exc)
             return None
 
         if attempt < max_retries:
@@ -79,8 +82,20 @@ def _fetch_api(
             logger.debug("Retry in %.1fs", sleep)
             time.sleep(sleep)
 
-    logger.error("All %d attempts failed for '%s'", max_retries, query)
+    logger.error("All %d attempts failed at offset %d", max_retries, offset)
     return None
+
+
+def _parse_created_time(raw: str) -> Optional[datetime]:
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        return None
 
 
 def _extract_price(params: list) -> dict:
@@ -110,14 +125,14 @@ def _normalize(raw: dict) -> dict:
 def fetch_listings(
     product_key: str,
     search_query: str,
+    cutoff: Optional[datetime] = None,
     delay_range: tuple[float, float] = (2.0, 4.0),
     max_retries: int = 3,
     backoff_base: float = 2.0,
 ) -> list[dict]:
     """
-    Fetch and normalize OLX listings for one search query via the REST API.
-
-    Pass delay_range=(0, 0) for the first product to skip the leading sleep.
+    Fetch OLX listings sorted newest-first, stopping as soon as a listing is
+    older than cutoff. Paginates automatically so no new listings are missed.
     Returns an empty list on any failure.
     """
     delay = random.uniform(*delay_range)
@@ -125,10 +140,29 @@ def fetch_listings(
         logger.debug("Sleeping %.1fs before fetching '%s'", delay, product_key)
         time.sleep(delay)
 
-    raw = _fetch_api(search_query, max_retries=max_retries, backoff_base=backoff_base)
-    if not raw:
-        logger.warning("No listings returned for '%s'", product_key)
-        return []
+    results = []
 
-    logger.info("Fetched %d listings for '%s' via API", len(raw), product_key)
-    return [_normalize(r) for r in raw]
+    for page_num in range(OLX_API_MAX_PAGES):
+        offset = page_num * OLX_API_LIMIT
+        page = _fetch_page(search_query, offset=offset, max_retries=max_retries, backoff_base=backoff_base)
+
+        if page is None:
+            break
+
+        hit_cutoff = False
+        for raw in page:
+            created = _parse_created_time(raw.get("created_time", ""))
+            if cutoff and created and created < cutoff:
+                hit_cutoff = True
+                break
+            results.append(_normalize(raw))
+
+        if hit_cutoff or len(page) < OLX_API_LIMIT:
+            # Either reached old listings or this was the last page
+            break
+
+    logger.info(
+        "Fetched %d new listings for '%s' across %d page(s)",
+        len(results), product_key, page_num + 1,
+    )
+    return results

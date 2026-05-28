@@ -84,19 +84,6 @@ def validate_env() -> None:
 # Per-product processing
 # ---------------------------------------------------------------------------
 
-def _is_recent(listing: dict, cutoff: datetime) -> bool:
-    ct = listing.get("created_time", "")
-    if not ct:
-        return True
-    try:
-        dt = datetime.fromisoformat(ct)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt >= cutoff
-    except (ValueError, TypeError):
-        return True
-
-
 def process_product(
     product_key: str,
     product_cfg: dict,
@@ -121,6 +108,7 @@ def process_product(
     listings = scraper.fetch_listings(
         product_key=product_key,
         search_query=search_query,
+        cutoff=cutoff,
         delay_range=delay_range,
         max_retries=scraper_cfg.get("max_retries", 3),
         backoff_base=scraper_cfg.get("retry_backoff_base_seconds", 2),
@@ -133,11 +121,12 @@ def process_product(
         deals_found=0,
         notifications_sent=0,
         skipped_seen=0,
-        skipped_old=0,
+        skipped_irrelevant=0,
         errors=0,
     )
 
     match_keywords = [kw.lower() for kw in product_cfg.get("match_keywords", [])]
+    exclude_keywords = [kw.lower() for kw in product_cfg.get("exclude_keywords", [])]
 
     for listing in listings:
         listing_id = listing["id"]
@@ -148,13 +137,13 @@ def process_product(
             result["errors"] += 1
             continue
 
-        if not _is_recent(listing, cutoff):
-            logger.debug("Skipping '%s' — older than cutoff", title)
-            result["skipped_old"] += 1
-            continue
-
         if match_keywords and not any(kw in title.lower() for kw in match_keywords):
             logger.debug("Skipping '%s' — title does not match keywords", title)
+            result["skipped_seen"] += 1
+            continue
+
+        if exclude_keywords and any(kw in title.lower() for kw in exclude_keywords):
+            logger.debug("Skipping '%s' — title contains excluded keyword", title)
             result["skipped_seen"] += 1
             continue
 
@@ -162,13 +151,18 @@ def process_product(
             result["skipped_seen"] += 1
             continue
 
-        # Classify condition via LLM
+        # Classify condition via LLM (also detects irrelevant listings)
         condition = condition_llm.classify_condition(
             listing_id=listing_id,
             title=title,
             description=listing.get("description", ""),
             model=condition_model,
         )
+
+        if condition == "irrelevant":
+            logger.debug("Skipping '%s' — LLM flagged as irrelevant", title)
+            result["skipped_irrelevant"] += 1
+            continue
 
         # Evaluate deal
         try:
@@ -277,7 +271,7 @@ def main() -> None:
             summary.append({"product_key": product_key, "errors": 1,
                             "listings_found": 0, "deals_found": 0,
                             "notifications_sent": 0, "skipped_seen": 0,
-                            "skipped_old": 0})
+                            "skipped_irrelevant": 0})
 
     db.set_last_run(run_started_at)
 
@@ -287,13 +281,13 @@ def main() -> None:
         total_deals += r.get("deals_found", 0)
         total_notified += r.get("notifications_sent", 0)
         logger.info(
-            "  %-25s listings=%-3d deals=%-2d notified=%-2d skipped=%-3d old=%-3d errors=%d",
+            "  %-25s listings=%-3d deals=%-2d notified=%-2d skipped=%-3d irrelevant=%-2d errors=%d",
             r.get("product_key", "?"),
             r.get("listings_found", 0),
             r.get("deals_found", 0),
             r.get("notifications_sent", 0),
             r.get("skipped_seen", 0),
-            r.get("skipped_old", 0),
+            r.get("skipped_irrelevant", 0),
             r.get("errors", 0),
         )
     logger.info("Total: %d deal(s), %d notification(s) sent.", total_deals, total_notified)

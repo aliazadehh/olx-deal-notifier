@@ -13,13 +13,16 @@ from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
-VALID_CONDITIONS = {"heavily_used", "used", "good", "very_good", "like_new", "unknown"}
+VALID_CONDITIONS = {"heavily_used", "used", "good", "very_good", "like_new", "unknown", "irrelevant"}
 
 SYSTEM_PROMPT = (
     "You are evaluating second-hand product listings from a Polish marketplace. "
-    "Classify the item's physical condition as exactly one of: "
+    "First decide if the listing is actually selling the product itself. "
+    "If the listing is for an accessory, bag, case, cover, cable, part, rental, service, "
+    "or any item other than the product itself, respond with: irrelevant. "
+    "Otherwise classify the product's physical condition as exactly one of: "
     "heavily_used, used, good, very_good, like_new, unknown. "
-    "Use 'unknown' only when there is truly no information to judge by. "
+    "Use 'unknown' only when there is truly no condition information. "
     "Respond with exactly ONE word — no punctuation, no explanation."
 )
 
