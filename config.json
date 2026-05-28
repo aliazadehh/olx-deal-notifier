@@ -30,7 +30,7 @@
     "used": 0.50,
     "good": 0.60,
     "very_good": 0.70,
-    "like_new": 0.78,
+    "like_new": 0.95,
     "unknown": 0.50
   },
   "condition_model": "openai/gpt-oss-120b:free",
