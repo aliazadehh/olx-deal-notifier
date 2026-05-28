@@ -12,6 +12,10 @@ concurrency:
   group: scrape
   cancel-in-progress: false
 
+# Opt into Node 24 now so the Sept 2026 runner upgrade is a non-event.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   run:
     runs-on: ubuntu-latest
