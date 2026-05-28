@@ -1,0 +1,48 @@
+name: scrape
+
+on:
+  schedule:
+    # 07:05 and 16:05 UTC = ~09:05 and ~18:05 Polish time (CEST/summer).
+    # During CET (winter), runs at 08:05 and 17:05 local time.
+    - cron: "5 7,16 * * *"
+  workflow_dispatch: {}  # allow manual triggering from the Actions UI
+
+# Only one run at a time — prevents two scheduled runs from racing on the DB commit.
+concurrency:
+  group: scrape
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # required to push the updated seen_listings.db back
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scraper
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: python main.py
+
+      - name: Commit updated database
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add seen_listings.db
+          if git diff --cached --quiet; then
+            echo "No DB changes to commit."
+          else
+            git commit -m "chore: update seen_listings.db [skip ci]"
+            git push
+          fi
