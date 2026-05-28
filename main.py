@@ -11,6 +11,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -81,6 +82,39 @@ def validate_env() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _parse_created(raw: str) -> Optional[datetime]:
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        return None
+
+
+def _loosest_threshold(thresholds: dict) -> float:
+    """Return the loosest (largest) fraction of new_price across all condition tiers."""
+    return max(thresholds.values()) if thresholds else 1.0
+
+
+def _parse_label(label: str) -> tuple[str, str]:
+    """
+    Split an LLM label into (kind, condition).
+      ("match", "like_new")   for match_<cond>
+      ("wrong_model", "")
+      ("irrelevant", "")
+    """
+    if label.startswith("match_"):
+        return "match", label[len("match_"):]
+    return label, ""
+
+
+# ---------------------------------------------------------------------------
 # Per-product processing
 # ---------------------------------------------------------------------------
 
@@ -98,7 +132,12 @@ def process_product(
     search_query = product_cfg["search_query"]
     new_price_pln = product_cfg["new_price_pln"]
 
-    logger.info("--- %s (new: %.0f PLN) ---", display_name, new_price_pln)
+    max_price = new_price_pln * _loosest_threshold(thresholds)
+
+    logger.info(
+        "--- %s (new: %.0f PLN, max deal price: %.0f PLN) ---",
+        display_name, new_price_pln, max_price,
+    )
 
     delay_range = (0.0, 0.0) if is_first else (
         scraper_cfg.get("request_delay_min_seconds", 2),
@@ -108,7 +147,7 @@ def process_product(
     listings = scraper.fetch_listings(
         product_key=product_key,
         search_query=search_query,
-        cutoff=cutoff,
+        max_price=max_price,
         delay_range=delay_range,
         max_retries=scraper_cfg.get("max_retries", 3),
         backoff_base=scraper_cfg.get("retry_backoff_base_seconds", 2),
@@ -117,16 +156,16 @@ def process_product(
     result = dict(
         product_key=product_key,
         display_name=display_name,
-        listings_found=len(listings),
+        listings_fetched=len(listings),
         deals_found=0,
         notifications_sent=0,
-        skipped_seen=0,
+        skipped_old=0,
+        skipped_already_seen=0,
+        skipped_wrong_model=0,
         skipped_irrelevant=0,
+        not_a_deal=0,
         errors=0,
     )
-
-    match_keywords = [kw.lower() for kw in product_cfg.get("match_keywords", [])]
-    exclude_keywords = [kw.lower() for kw in product_cfg.get("exclude_keywords", [])]
 
     for listing in listings:
         listing_id = listing["id"]
@@ -137,34 +176,41 @@ def process_product(
             result["errors"] += 1
             continue
 
-        if match_keywords and not any(kw in title.lower() for kw in match_keywords):
-            logger.debug("Skipping '%s' — title does not match keywords", title)
-            result["skipped_seen"] += 1
-            continue
-
-        if exclude_keywords and any(kw in title.lower() for kw in exclude_keywords):
-            logger.debug("Skipping '%s' — title contains excluded keyword", title)
-            result["skipped_seen"] += 1
+        # Client-side cutoff (sort doesn't work, so we filter after fetch)
+        created = _parse_created(listing.get("created_time", ""))
+        if created and created < cutoff:
+            result["skipped_old"] += 1
             continue
 
         if db.is_seen(listing_id):
-            result["skipped_seen"] += 1
+            result["skipped_already_seen"] += 1
             continue
 
-        # Classify condition via LLM (also detects irrelevant listings)
-        condition = condition_llm.classify_condition(
+        # LLM-as-judge: model match + condition in one call
+        label = condition_llm.classify_listing(
             listing_id=listing_id,
+            display_name=display_name,
             title=title,
             description=listing.get("description", ""),
             model=condition_model,
         )
 
-        if condition == "irrelevant":
-            logger.debug("Skipping '%s' — LLM flagged as irrelevant", title)
+        kind, condition = _parse_label(label)
+
+        if kind == "wrong_model":
+            logger.debug("Skipping '%s' — LLM flagged wrong_model", title)
+            result["skipped_wrong_model"] += 1
+            continue
+
+        if kind == "irrelevant":
+            logger.debug("Skipping '%s' — LLM flagged irrelevant", title)
             result["skipped_irrelevant"] += 1
             continue
 
-        # Evaluate deal
+        if kind != "match":
+            # Unexpected — treat as unknown match
+            condition = "unknown"
+
         try:
             qualifies, discount_pct = deal_checker.is_deal(
                 listing=listing,
@@ -178,6 +224,7 @@ def process_product(
             continue
 
         if not qualifies:
+            result["not_a_deal"] += 1
             continue
 
         result["deals_found"] += 1
@@ -250,8 +297,8 @@ def main() -> None:
         cutoff = last_run
         logger.info("Filtering listings posted after %s", cutoff.isoformat())
     else:
-        cutoff = run_started_at - timedelta(hours=13)
-        logger.info("First run — using cutoff of 13 hours ago (%s)", cutoff.isoformat())
+        cutoff = run_started_at - timedelta(hours=18)
+        logger.info("First run — using cutoff of 18 hours ago (%s)", cutoff.isoformat())
 
     summary = []
     for idx, (product_key, product_cfg) in enumerate(products.items()):
@@ -268,10 +315,13 @@ def main() -> None:
             summary.append(result)
         except Exception as exc:
             logger.error("Unhandled error for '%s': %s", product_key, exc, exc_info=True)
-            summary.append({"product_key": product_key, "errors": 1,
-                            "listings_found": 0, "deals_found": 0,
-                            "notifications_sent": 0, "skipped_seen": 0,
-                            "skipped_irrelevant": 0})
+            summary.append({
+                "product_key": product_key, "listings_fetched": 0,
+                "deals_found": 0, "notifications_sent": 0,
+                "skipped_old": 0, "skipped_already_seen": 0,
+                "skipped_wrong_model": 0, "skipped_irrelevant": 0,
+                "not_a_deal": 0, "errors": 1,
+            })
 
     db.set_last_run(run_started_at)
 
@@ -281,13 +331,16 @@ def main() -> None:
         total_deals += r.get("deals_found", 0)
         total_notified += r.get("notifications_sent", 0)
         logger.info(
-            "  %-25s listings=%-3d deals=%-2d notified=%-2d skipped=%-3d irrelevant=%-2d errors=%d",
+            "  %-22s fetched=%-3d old=%-3d seen=%-3d wrong=%-2d irrel=%-2d not_deal=%-3d deal=%-2d notif=%-2d err=%d",
             r.get("product_key", "?"),
-            r.get("listings_found", 0),
+            r.get("listings_fetched", 0),
+            r.get("skipped_old", 0),
+            r.get("skipped_already_seen", 0),
+            r.get("skipped_wrong_model", 0),
+            r.get("skipped_irrelevant", 0),
+            r.get("not_a_deal", 0),
             r.get("deals_found", 0),
             r.get("notifications_sent", 0),
-            r.get("skipped_seen", 0),
-            r.get("skipped_irrelevant", 0),
             r.get("errors", 0),
         )
     logger.info("Total: %d deal(s), %d notification(s) sent.", total_deals, total_notified)
