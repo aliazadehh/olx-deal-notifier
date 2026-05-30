@@ -19,6 +19,16 @@
       "display_name": "Pioneer DDJ-FLX4",
       "search_query": "pioneer-ddj-flx4",
       "new_price_pln": 1400
+    },
+    "roland_sp404_mk2": {
+      "display_name": "Roland SP-404 MK II",
+      "search_query": "roland-sp-404-mk2",
+      "new_price_pln": 2200
+    },
+    "akai_mpc_sample": {
+      "display_name": "Akai MPC Sample",
+      "search_query": "akai-mpc-sample",
+      "new_price_pln": 1600
     }
   },
   "deal_thresholds": {
