@@ -25,9 +25,9 @@
       "search_query": "roland-sp-404-mk2",
       "new_price_pln": 2200
     },
-    "akai_mpc_sampler": {
-      "display_name": "Akai MPC Sampler",
-      "search_query": "akai-mpc",
+    "akai_mpc_sample": {
+      "display_name": "Akai MPC Sample",
+      "search_query": "akai-mpc-sample",
       "new_price_pln": 1600
     }
   },
