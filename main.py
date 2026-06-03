@@ -124,6 +124,7 @@ def process_product(
     thresholds: dict,
     scraper_cfg: dict,
     condition_model: str,
+    fallback_models: list[str],
     is_first: bool,
     cutoff: datetime,
 ) -> dict:
@@ -193,6 +194,7 @@ def process_product(
             title=title,
             description=listing.get("description", ""),
             model=condition_model,
+            fallback_models=fallback_models,
         )
 
         kind, condition = _parse_label(label)
@@ -284,6 +286,7 @@ def main() -> None:
     thresholds = config.get("deal_thresholds", {})
     scraper_cfg = config.get("scraper", {})
     condition_model = config.get("condition_model", "openai/gpt-oss-120b:free")
+    fallback_models = config.get("condition_model_fallbacks", [])
 
     if not products:
         logger.error("No products defined in config.json")
@@ -309,6 +312,7 @@ def main() -> None:
                 thresholds=thresholds,
                 scraper_cfg=scraper_cfg,
                 condition_model=condition_model,
+                fallback_models=fallback_models,
                 is_first=(idx == 0),
                 cutoff=cutoff,
             )
