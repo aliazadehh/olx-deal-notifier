@@ -40,6 +40,11 @@
     "unknown": 0.65
   },
   "condition_model": "openai/gpt-oss-120b:free",
+  "condition_model_fallbacks": [
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "google/gemma-4-31b-it:free",
+    "nvidia/nemotron-3-super-120b-a12b:free"
+  ],
   "scraper": {
     "request_delay_min_seconds": 2,
     "request_delay_max_seconds": 4,
