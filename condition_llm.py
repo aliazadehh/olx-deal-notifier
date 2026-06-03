@@ -9,9 +9,8 @@ listing is the right product AND its condition:
   wrong_model                     → different product / related model
   irrelevant                      → accessory, bag, rental, etc.
 
-On rate limits / timeouts / 5xx the call is retried with exponential
-backoff. After exhausting retries we fall back to 'match_unknown' so the
-pipeline keeps running.
+Models are tried in order (primary then fallbacks). If all fail,
+the listing is skipped ('wrong_model') to avoid false notifications.
 """
 
 import logging
@@ -74,7 +73,7 @@ def _get_client() -> Optional[OpenAI]:
 
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
-        logger.warning("OPENROUTER_API_KEY not set; defaulting to match_unknown")
+        logger.warning("OPENROUTER_API_KEY not set; skipping LLM classification")
         return None
 
     base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
@@ -98,7 +97,6 @@ def _call_with_retry(client: OpenAI, model: str, messages: list) -> Optional[str
         except APITimeoutError as exc:
             logger.warning("LLM timeout (attempt %d/%d): %s", attempt, MAX_RETRIES, exc)
         except APIError as exc:
-            # Retry on 5xx; surface client errors immediately
             status = getattr(exc, "status_code", None)
             if status and 500 <= status < 600:
                 logger.warning("LLM 5xx (attempt %d/%d): %s", attempt, MAX_RETRIES, exc)
@@ -113,7 +111,7 @@ def _call_with_retry(client: OpenAI, model: str, messages: list) -> Optional[str
             logger.debug("LLM retry in %.1fs", sleep)
             time.sleep(sleep)
 
-    logger.warning("LLM call failed after %d attempts", MAX_RETRIES)
+    logger.warning("LLM call failed after %d attempts for model %s", MAX_RETRIES, model)
     return None
 
 
@@ -123,46 +121,51 @@ def classify_listing(
     title: str,
     description: str,
     model: str = "openai/gpt-oss-120b:free",
+    fallback_models: list[str] | None = None,
 ) -> str:
     """
     Return the classification label for a listing.
 
-    Caches within a single run. Always returns a valid label (never raises);
-    falls back to 'match_unknown' on any persistent failure so the pipeline
-    keeps running.
+    Tries the primary model first, then each fallback in order.
+    Caches within a single run. If all models fail, returns 'wrong_model'
+    (fail-safe: skip the listing rather than risk a false notification).
     """
     if listing_id in _cache:
         return _cache[listing_id]
 
     client = _get_client()
     if client is None:
-        return "match_unknown"
+        return "wrong_model"
 
     text = (title or "").strip()
     desc = (description or "").strip()
 
     if not text and not desc:
-        _cache[listing_id] = "match_unknown"
-        return "match_unknown"
+        _cache[listing_id] = "wrong_model"
+        return "wrong_model"
 
-    raw_output = _call_with_retry(
-        client=client,
-        model=model,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": USER_TEMPLATE.format(
-                display_name=display_name, title=text, description=desc,
-            )},
-        ],
-    )
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": USER_TEMPLATE.format(
+            display_name=display_name, title=text, description=desc,
+        )},
+    ]
 
-    if raw_output is None:
-        label = "match_unknown"
-    else:
-        cleaned = raw_output.strip().lower().rstrip(".,:;!?")
-        label = cleaned if cleaned in VALID_LABELS else "match_unknown"
-        if label == "match_unknown" and cleaned not in VALID_LABELS:
-            logger.debug("LLM returned unexpected label %r for %s", cleaned, listing_id)
+    label = None
+    for attempt_model in [model] + (fallback_models or []):
+        raw_output = _call_with_retry(client=client, model=attempt_model, messages=messages)
+        if raw_output is not None:
+            cleaned = raw_output.strip().lower().rstrip(".,:;!?")
+            if cleaned in VALID_LABELS:
+                label = cleaned
+                if attempt_model != model:
+                    logger.info("Used fallback model %s for listing %s", attempt_model, listing_id)
+                break
+            logger.debug("Model %s returned unexpected label %r for %s", attempt_model, cleaned, listing_id)
+
+    if label is None:
+        logger.warning("All models failed for listing %s — skipping (wrong_model)", listing_id)
+        label = "wrong_model"
 
     _cache[listing_id] = label
     logger.debug("Label for %s: %s", listing_id, label)
